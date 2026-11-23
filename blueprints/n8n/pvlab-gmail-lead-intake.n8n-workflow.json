@@ -1,0 +1,333 @@
+{
+  "name": "PV Lab Germany — Gmail Lead Intake (Gmail → Claude → Airtable)",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "in:inbox -category:promotions -category:social",
+          "readStatus": "unread"
+        },
+        "options": {}
+      },
+      "id": "fe10e7e3-336b-56c9-9bec-eae905f9a8be",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-haiku-5-5', max_tokens: 800, system: \"You are the inbox triage assistant of PV Lab Germany GmbH (Potsdam, Germany), an ISO/IEC 17025 accredited laboratory for quality, reliability and bankability testing of solar (PV) modules and power plants.\\n\\nYou receive one incoming email (subject, sender and body; it may be in German, English or Hebrew). Decide what kind of email it is and, if it is a sales lead, extract the lead data.\\n\\nCategories:\\n- \\\"lead\\\": a NEW B2B inquiry for PV Lab services: a request for a quote, testing, inspection, an on-site visit, due diligence, a warranty or claim analysis.\\n- \\\"invoice\\\": an invoice, receipt, payment reminder or billing notice (Rechnung, Zahlungserinnerung).\\n- \\\"support\\\": a message about an existing order or project: scheduling, sample shipping, report questions.\\n- \\\"spam\\\": unsolicited marketing, newsletters, phishing.\\n- \\\"other\\\": anything else (job applications, internal mail, personal mail).\\n\\nFor leads, choose \\\"service\\\" from exactly one of:\\n- \\\"EL & Flasher Testing\\\": electroluminescence, flasher / STC power measurement, micro-cracks, pre-shipment or incoming-goods inspection.\\n- \\\"Bankability Due Diligence\\\": investors, banks, insurers, factory audits, IEC 61215 / 61730 sampling, technical due diligence.\\n- \\\"On-Site Mobile PV Lab\\\": testing at the plant: mobile lab, drone or night-time EL, IV-curve tracing in the field.\\n- \\\"Warranty & Claim Analysis\\\": degradation, PID, LID / LeTID, hotspots, delamination, claims against a manufacturer.\\n\\nRules:\\n- \\\"mw\\\" is the project size in megawatts. Convert kWp to MW (divide by 1000) and GW to MW (multiply by 1000). Use 0 when no size is mentioned. Never invent a size.\\n- \\\"contact\\\" is the sender's name followed by their email in parentheses, for example \\\"K. Hoffmann (k.hoffmann@enerparc.de)\\\".\\n- \\\"company\\\" is the client company, with the project or site name after an em dash when one is given, for example \\\"Enerparc AG — Saxony Park\\\". Use the email domain when no company is named.\\n- \\\"protocol\\\" is a short recommended testing protocol in English, at most 200 characters.\\n- \\\"summary\\\" is one English sentence describing the email.\\n- \\\"is_lead\\\" is true only when \\\"category\\\" is \\\"lead\\\".\\n- \\\"confidence\\\" is a number from 0 to 1.\\n- For non-leads, set \\\"company\\\", \\\"contact\\\", \\\"service\\\" and \\\"protocol\\\" to empty strings and \\\"mw\\\" to 0.\\n\\nReply with ONLY one JSON object and nothing else (no markdown, no code fences), with exactly these keys:\\n{\\\"category\\\": \\\"...\\\", \\\"is_lead\\\": true, \\\"confidence\\\": 0.0, \\\"company\\\": \\\"...\\\", \\\"contact\\\": \\\"...\\\", \\\"service\\\": \\\"...\\\", \\\"mw\\\": 0, \\\"protocol\\\": \\\"...\\\", \\\"summary\\\": \\\"...\\\"}\", messages: [{ role: 'user', content: 'Subject: ' + ($json.subject || '') + '\\nFrom: ' + (($json.from && $json.from.text) || '') + '\\nDate: ' + ($json.date || '') + '\\n\\n' + String($json.text || '').slice(0, 8000) }] }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "61ebbd7c-634c-5e04-bffe-3c6fe3e529f2",
+      "name": "Claude — Classify & Extract",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "Anthropic API key (x-api-key)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Parse Claude's answer and compute Score / Value exactly like the dashboard (calcScore in index.html)\nconst SERVICES = [\"EL & Flasher Testing\", \"Bankability Due Diligence\", \"On-Site Mobile PV Lab\", \"Warranty & Claim Analysis\"];\nconst raw = ($json.content && $json.content[0] && $json.content[0].text) || '';\nconst match = raw.match(/\\{[\\s\\S]*\\}/);\nlet ai;\ntry {\n  ai = JSON.parse(match ? match[0] : raw);\n} catch (e) {\n  ai = { category: 'other', is_lead: false, confidence: 0, summary: 'Could not parse the model answer' };\n}\nconst email = $('Gmail Trigger').item.json;\nconst isLead = ai.is_lead === true && ai.category === 'lead';\nconst service = SERVICES.includes(ai.service) ? ai.service : SERVICES[0];\nconst mw = Math.max(0, Number(ai.mw) || 0);\nconst score = Math.min(99, Math.max(55, Math.round(52 + (mw * 0.35) + (service.includes('Bankability') ? 12 : 6))));\nreturn {\n  json: {\n    category: ai.category || 'other',\n    is_lead: isLead,\n    confidence: Number(ai.confidence) || 0,\n    company: ai.company || '',\n    contact: ai.contact || '',\n    service,\n    mw,\n    value: Math.round(mw * 520),\n    score,\n    protocol: ai.protocol || '',\n    summary: ai.summary || '',\n    messageId: email.id,\n    subject: email.subject || '',\n    from: (email.from && email.from.text) || '',\n    received: email.date || ''\n  }\n};"
+      },
+      "id": "7b985399-139d-5d68-b7cf-4eea6be5d873",
+      "name": "Parse & Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "57b6abc2-12d1-524b-bdd7-f4a67d3ed8cb",
+              "leftValue": "={{ $json.is_lead }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "84c82526-fbcb-5482-a75e-27efa721bb82",
+      "name": "Is it a lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        720,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "appXXXXXXXXXXXXXX",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Company": "={{ $json.company }}",
+            "Contact": "={{ $json.contact }}",
+            "Service": "={{ $json.service }}",
+            "MW": "={{ $json.mw }}",
+            "Value": "={{ $json.value }}",
+            "Score": "={{ $json.score }}",
+            "Status": "New",
+            "Protocol": "={{ $json.protocol }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "typecast": true
+        }
+      },
+      "id": "07c2dc0f-b94a-5bd5-93c6-f7aff0dc0296",
+      "name": "Airtable — Create Lead",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        960,
+        160
+      ],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable PAT"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "sales@your-domain.example",
+        "subject": "=New PV lead: {{ $('Parse & Score').item.json.company }} ({{ $('Parse & Score').item.json.mw }} MW, score {{ $('Parse & Score').item.json.score }})",
+        "emailType": "text",
+        "message": "={{ $('Parse & Score').item.json.company }} — {{ $('Parse & Score').item.json.service }}, {{ $('Parse & Score').item.json.mw }} MW\nContact: {{ $('Parse & Score').item.json.contact }}\nAI score: {{ $('Parse & Score').item.json.score }} / 100\n\n{{ $('Parse & Score').item.json.summary }}\n\nOriginal email: {{ $('Parse & Score').item.json.subject }}\nThe lead is now in the PV Lab dashboard with status New.",
+        "options": {}
+      },
+      "id": "4cb4184e-8398-5a8b-89b6-9395027d926f",
+      "name": "Gmail — Alert Sales",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1200,
+        160
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "appXXXXXXXXXXXXXX",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Inbox Log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Subject": "={{ $json.subject }}",
+            "From": "={{ $json.from }}",
+            "Category": "={{ $json.category }}",
+            "Confidence": "={{ $json.confidence }}",
+            "Summary": "={{ $json.summary }}",
+            "Received": "={{ $json.received }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "typecast": true
+        }
+      },
+      "id": "500d6669-69d1-5e9a-b691-27f496cf743b",
+      "name": "Airtable — Log Non-Lead",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        960,
+        440
+      ],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable PAT"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{ $json.messageId }}"
+      },
+      "id": "842bea64-6c9d-538b-9114-dd954d58265a",
+      "name": "Gmail — Mark as Read",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        720,
+        520
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Claude — Classify & Extract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude — Classify & Extract": {
+      "main": [
+        [
+          {
+            "node": "Parse & Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Score": {
+      "main": [
+        [
+          {
+            "node": "Is it a lead?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Gmail — Mark as Read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is it a lead?": {
+      "main": [
+        [
+          {
+            "node": "Airtable — Create Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Airtable — Log Non-Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Airtable — Create Lead": {
+      "main": [
+        [
+          {
+            "node": "Gmail — Alert Sales",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

@@ -1,0 +1,26 @@
+[
+  {
+    "subject": "Anfrage: EL-Prüfung für 32 MWp Lieferung (Brandenburg)",
+    "from": "Sabine Becker <s.becker@rwe.com>",
+    "text": "Guten Tag, für unser Projekt RWE Renewables Brandenburg erwarten wir im Januar eine Modullieferung von ca. 32 MWp. Wir benötigen eine Wareneingangsprüfung mit EL-Bildern und Flasher-Messungen an einer Stichprobe. Können Sie uns ein Angebot schicken? Viele Grüße, Sabine Becker",
+    "expected": { "category": "lead", "service": "EL & Flasher Testing", "mw": 32 }
+  },
+  {
+    "subject": "Technical due diligence for 85 MW portfolio acquisition",
+    "from": "Thomas Lindner <t.lindner@baywa-re.com>",
+    "text": "Hello PV Lab team, our investors require an independent bankability report (IEC 61215/61730 sampling) for an 85 MW solar portfolio we are acquiring. Please let us know your availability and a quote.",
+    "expected": { "category": "lead", "service": "Bankability Due Diligence", "mw": 85 }
+  },
+  {
+    "subject": "Rechnung Nr. 2026-1184 – Laborbedarf GmbH",
+    "from": "Buchhaltung <rechnung@laborbedarf.example>",
+    "text": "Sehr geehrte Damen und Herren, anbei erhalten Sie unsere Rechnung Nr. 2026-1184 über 1.240,00 EUR. Zahlbar innerhalb von 14 Tagen.",
+    "expected": { "category": "invoice" }
+  },
+  {
+    "subject": "Re: Report PV-2026-077 — question about IV curve page 4",
+    "from": "Carla Mendoza <cmendoza@sonnedix.com>",
+    "text": "Hi, thanks for the report you sent last week. On page 4, could you clarify which irradiance level the IV curves were measured at?",
+    "expected": { "category": "support" }
+  }
+]
