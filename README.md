@@ -15,6 +15,8 @@
 | [`blueprints/make/pvlab-gmail-lead-intake.make-blueprint.json`](blueprints/make/pvlab-gmail-lead-intake.make-blueprint.json) | **Make.com** | Scenarios ← Create new ← תפריט `⋯` ← **Import Blueprint** |
 | [`blueprints/n8n/pvlab-gmail-lead-intake.n8n-workflow.json`](blueprints/n8n/pvlab-gmail-lead-intake.n8n-workflow.json) | **n8n** | Workflows ← תפריט `⋯` ← **Import from File** (או הדבקה של ה-JSON ישירות לקנבס) |
 
+> **משימת בונוס:** בריפו יש גם אוטומציה שנייה, [מעקב יומי אחרי הצעות מחיר](#בונוס-מעקב-יומי-אחרי-הצעות-מחיר), שמעדכנת רשומות קיימות בטבלת `Leads`.
+
 ## תרשים הזרימה
 
 ```mermaid
@@ -61,6 +63,47 @@ flowchart LR
 
 הרשומות נשלחות עם `typecast: true`, כך שאפשרויות חסרות ב-Single select נוצרות לבד.
 
+## בונוס: מעקב יומי אחרי הצעות מחיר
+
+אוטומציה שנייה, שלא יוצרת לידים אלא **מעדכנת** לידים קיימים בטבלה שהדאשבורד קורא ממנה.
+בכל יום עבודה בשעה 08:00 היא מחפשת לידים שתקועים בסטטוס `Quote Sent` כבר 7 ימים או יותר. לכל ליד כזה
+Claude מנסח טיוטת מייל מעקב ללקוח, שנשלחת לצוות המכירות ולא ישירות ללקוח. אחר כך האוטומציה מעדכנת את הרשומה ב-Airtable.
+
+| קובץ | פלטפורמה |
+|---|---|
+| [`blueprints/make/pvlab-quote-followup.make-blueprint.json`](blueprints/make/pvlab-quote-followup.make-blueprint.json) | **Make.com** |
+| [`blueprints/n8n/pvlab-quote-followup.n8n-workflow.json`](blueprints/n8n/pvlab-quote-followup.n8n-workflow.json) | **n8n** |
+
+```mermaid
+flowchart LR
+    A[⏰ כל יום עבודה 08:00] --> B[🗂️ Airtable<br/>חיפוש: Quote Sent<br/>7+ ימים, פחות מ-3 תזכורות]
+    B --> C[🤖 Claude<br/>טיוטת מייל מעקב<br/>אנגלית או גרמנית]
+    C --> D[📨 Gmail<br/>תזכורת לצוות המכירות]
+    D --> E[🗂️ Airtable<br/>עדכון: Last Follow-up<br/>Follow-up Count +1]
+    E -.-> F[📊 דאשבורד PV Lab]
+```
+
+**איך נבחרים הלידים** (נוסחת Airtable):
+
+```
+AND({Status} = 'Quote Sent',
+    DATETIME_DIFF(NOW(), IF({Last Follow-up}, {Last Follow-up}, LAST_MODIFIED_TIME({Status})), 'days') >= 7,
+    OR({Follow-up Count} = BLANK(), {Follow-up Count} < 3))
+```
+
+כלומר: עברו 7 ימים מאז שהסטטוס השתנה ל-`Quote Sent`, או 7 ימים מאז התזכורת האחרונה. אחרי 3 תזכורות האוטומציה מפסיקה לטפל בליד.
+
+**שני שדות חדשים בטבלת `Leads`:**
+
+| שדה | סוג |
+|---|---|
+| `Last Follow-up` | Date |
+| `Follow-up Count` | Number (מספר שלם) |
+
+ההנחיה ל-Claude נמצאת ב-[`prompts/followup-system-prompt.md`](prompts/followup-system-prompt.md). Claude מקבל הוראה לא להמציא מחירים, הנחות או תאריכים. אם הדומיין של הלקוח הוא ‎.de, ‎.at או ‎.ch, המייל נכתב בגרמנית.
+
+**תזמון:** ב-n8n התזמון כבר מוגדר בתוך ה-Workflow (`0 8 * * 1-5`). ב-Make התזמון לא נשמר ב-Blueprint, אז אחרי הייבוא מגדירים אותו ידנית: Scheduling ← Days of the week ← ימים א'–ה' ← 08:00.
+
 ## מה להחליף אחרי הייבוא
 
 ה-Blueprint לא כולל מפתחות או חיבורים — רק את המבנה. אחרי הייבוא:
@@ -95,9 +138,9 @@ python3 scripts/validate.py           # בדיקות אופליין (דורש No
 ## מבנה הריפו
 
 ```
-blueprints/make/   ← Blueprint לייבוא ב-Make.com
-blueprints/n8n/    ← Workflow לייבוא ב-n8n
-prompts/           ← ההנחיה ל-Claude (מקור אחד לשתי הפלטפורמות)
+blueprints/make/   ← Blueprints לייבוא ב-Make.com (קליטת לידים + מעקב הצעות מחיר)
+blueprints/n8n/    ← Workflows לייבוא ב-n8n (אותן שתי אוטומציות)
+prompts/           ← ההנחיות ל-Claude (מקור אחד לשתי הפלטפורמות)
 samples/           ← מיילים לדוגמה לבדיקה
 scripts/           ← יצירת ה-Blueprints ובדיקתם
 ```

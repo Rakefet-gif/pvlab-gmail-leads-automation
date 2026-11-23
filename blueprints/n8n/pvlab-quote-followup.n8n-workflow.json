@@ -1,0 +1,243 @@
+{
+  "name": "PV Lab Germany — Daily Quote Follow-up (Airtable → Claude → Gmail → Airtable)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "49842ae6-5353-5350-a669-89e06512eb94",
+      "name": "Every weekday 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "appXXXXXXXXXXXXXX",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "filterByFormula": "AND({Status} = 'Quote Sent', DATETIME_DIFF(NOW(), IF({Last Follow-up}, {Last Follow-up}, LAST_MODIFIED_TIME({Status})), 'days') >= 7, OR({Follow-up Count} = BLANK(), {Follow-up Count} < 3))",
+        "returnAll": false,
+        "limit": 50,
+        "options": {}
+      },
+      "id": "03b16af6-e0a0-5646-9097-d0bf286fb48b",
+      "name": "Airtable — Find Open Quotes",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        220,
+        300
+      ],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable PAT"
+        }
+      },
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Normalise the Airtable record and decide the next follow-up number\nconst f = $json.fields || $json;\nconst count = Number(f['Follow-up Count']) || 0;\nconst since = f['Last Follow-up'] || 'none yet';\nconst text = [\n  'Company: ' + (f.Company || ''),\n  'Contact: ' + (f.Contact || ''),\n  'Service: ' + (f.Service || ''),\n  'Project size: ' + (Number(f.MW) || 0) + ' MW',\n  'Estimated value: ' + (Number(f.Value) || 0) + ' EUR',\n  'AI score: ' + (Number(f.Score) || 0),\n  'Protocol: ' + (f.Protocol || ''),\n  'Last follow-up: ' + since,\n  'Follow-ups already sent: ' + count\n].join('\\n');\nreturn {\n  json: {\n    recordId: $json.id,\n    company: f.Company || '',\n    mw: Number(f.MW) || 0,\n    nextCount: count + 1,\n    today: new Date().toISOString().slice(0, 10),\n    text\n  }\n};"
+      },
+      "id": "c41c252a-82c1-59e4-a00a-e5b81534cb9c",
+      "name": "Prepare Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-haiku-5-5', max_tokens: 600, system: \"You are the sales assistant of PV Lab Germany GmbH (Potsdam, Germany), an ISO/IEC 17025 accredited laboratory for testing solar (PV) modules and power plants.\\n\\nYou receive one lead from the sales pipeline. A quote was sent to this client and there has been no progress for at least 7 days. Write a reminder for the PV Lab sales team that they can act on in one minute.\\n\\nReply in plain text (no markdown, no code fences) in exactly this structure:\\n\\nSTATUS: one sentence on who the client is, what they asked for and how long the quote has been open.\\n\\nSUGGESTED FOLLOW-UP EMAIL\\nTo: the client's email address taken from the Contact field (write \\\"unknown\\\" if there is none)\\nSubject: a short subject line\\nBody: a polite follow-up email of at most 120 words, signed \\\"PV Lab Germany Sales Team\\\". Refer to the service, the project size in MW and the testing protocol. Offer a short call to answer open questions.\\n\\nRules:\\n- Write the email in English unless the contact's email domain ends in .de, .at or .ch; then write it in German.\\n- Never invent prices, discounts, dates, deadlines or test results. Use only the data you were given.\\n- If this is the second or third follow-up, keep it shorter and offer to close the request if the project is on hold.\", messages: [{ role: 'user', content: $json.text }] }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "ae6e8367-1607-53cc-9274-ece0f631553f",
+      "name": "Claude — Draft Follow-up",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "Anthropic API key (x-api-key)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "sales@your-domain.example",
+        "subject": "=Follow-up due: {{ $('Prepare Lead').item.json.company }} ({{ $('Prepare Lead').item.json.mw }} MW, quote open 7+ days)",
+        "emailType": "text",
+        "message": "={{ $json.content[0].text }}",
+        "options": {}
+      },
+      "id": "bdc99f13-3117-50bb-8963-cba96e1d0ad8",
+      "name": "Gmail — Remind Sales",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        880,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "appXXXXXXXXXXXXXX",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $('Prepare Lead').item.json.recordId }}",
+            "Last Follow-up": "={{ $('Prepare Lead').item.json.today }}",
+            "Follow-up Count": "={{ $('Prepare Lead').item.json.nextCount }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": []
+        },
+        "options": {
+          "typecast": true
+        }
+      },
+      "id": "7d07e14c-f301-587d-aae2-83ae843a02d4",
+      "name": "Airtable — Update Lead",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        1100,
+        300
+      ],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable PAT"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every weekday 08:00": {
+      "main": [
+        [
+          {
+            "node": "Airtable — Find Open Quotes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Airtable — Find Open Quotes": {
+      "main": [
+        [
+          {
+            "node": "Prepare Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Lead": {
+      "main": [
+        [
+          {
+            "node": "Claude — Draft Follow-up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude — Draft Follow-up": {
+      "main": [
+        [
+          {
+            "node": "Gmail — Remind Sales",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail — Remind Sales": {
+      "main": [
+        [
+          {
+            "node": "Airtable — Update Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

@@ -110,6 +110,54 @@ check(not p[2]["is_lead"] and p[2]["category"] == "invoice", "invoice routed to 
 check(not p[3]["is_lead"] and p[3]["category"] == "other", "unparseable answer falls back to 'other'")
 check(all(x["score"] == x["dashboardScore"] for x in p), "Score equals the dashboard's calcScore for every sample")
 
+# ---------------------------------------------------------------------
+# Bonus: daily quote follow-up
+# ---------------------------------------------------------------------
+print("Quote follow-up (Make)")
+FU_MAKE = json.loads((ROOT / "blueprints/make/pvlab-quote-followup.make-blueprint.json").read_text(encoding="utf-8"))
+FU_N8N = json.loads((ROOT / "blueprints/n8n/pvlab-quote-followup.n8n-workflow.json").read_text(encoding="utf-8"))
+fu_modules = FU_MAKE["flow"]
+fu_ids = [m["id"] for m in fu_modules]
+check(fu_ids == [1, 2, 3, 4, 5], "5 modules in order: search → text → Claude → Gmail → update")
+check({m["module"].split(":")[0] for m in fu_modules} >= {"airtable", "http", "google-email"}, "connects Airtable, Claude (HTTP) and Gmail")
+formula = fu_modules[0]["mapper"]["formula"]
+check(formula.count("(") == formula.count(")") and formula.count("'") % 2 == 0, "Airtable formula has balanced parentheses and quotes")
+check("{Status} = 'Quote Sent'" in formula and ">= 7" in formula, "formula selects quotes open 7+ days")
+fu_http = next(m for m in fu_modules if m["module"] == "http:ActionSendData")
+try:
+    b = json.loads(fu_http["mapper"]["data"].replace("{{2.json}}", json.dumps("Company: X\nMW: 5")))
+    check(b["messages"][0]["content"].startswith("Company:") and "follow-up" in b["system"].lower(), "Claude request body is valid JSON")
+except Exception as e:  # noqa: BLE001
+    check(False, f"Claude request body is valid JSON ({e})")
+upd = fu_modules[4]["mapper"]
+check(upd["id"] == "{{1.id}}" and set(upd["record"]) == {"Last Follow-up", "Follow-up Count"}, "update writes only Last Follow-up and Follow-up Count on the same record")
+
+print("Quote follow-up (n8n)")
+fu_names = [n["name"] for n in FU_N8N["nodes"]]
+fu_targets = [c["node"] for src in FU_N8N["connections"].values() for out in src["main"] for c in out]
+check(all(t in fu_names for t in fu_targets) and len(fu_targets) == len(fu_names) - 1, "linear chain, every node connected")
+fu_by = {n["name"]: n for n in FU_N8N["nodes"]}
+fu_harness = r"""
+const prep = new Function('$json', %s);
+const recs = [
+  { id: 'recA', fields: { Company: 'Sonnedix Iberia', Contact: 'C. Mendoza (cmendoza@sonnedix.com)', Service: 'Warranty & Claim Analysis', MW: 45, Value: 29000, Score: 86, Status: 'Quote Sent', Protocol: 'PID stress test' } },
+  { id: 'recB', Company: 'RWE Brandenburg', Contact: 'S. Becker (s.becker@rwe.com)', MW: '32', 'Follow-up Count': 2, 'Last Follow-up': '2026-11-10' }
+];
+const out = recs.map(r => prep(r).json);
+const bodyExpr = %s.replace(/^=\{\{/, '').replace(/\}\}$/, '');
+out.forEach(o => { const $json = o; o.body = JSON.parse(eval(bodyExpr)); });
+console.log(JSON.stringify(out));
+"""
+fu_script = fu_harness % (json.dumps(fu_by["Prepare Lead"]["parameters"]["jsCode"]), json.dumps(fu_by["Claude — Draft Follow-up"]["parameters"]["jsonBody"]))
+try:
+    fu = json.loads(subprocess.run(["node", "-e", fu_script], capture_output=True, text=True, check=True).stdout)
+except subprocess.CalledProcessError as e:
+    print(e.stderr)
+    sys.exit(1)
+check(fu[0]["recordId"] == "recA" and fu[0]["nextCount"] == 1 and fu[0]["mw"] == 45, "nested-fields record → first follow-up for recA")
+check(fu[1]["recordId"] == "recB" and fu[1]["nextCount"] == 3 and fu[1]["mw"] == 32, "flat record with 2 follow-ups → third follow-up")
+check(all(o["body"]["messages"][0]["content"].startswith("Company:") for o in fu), "Claude request body built for each lead")
+
 print()
 print("FAILED: %d check(s)" % len(failures) if failures else "All checks passed.")
 sys.exit(1 if failures else 0)

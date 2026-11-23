@@ -472,6 +472,314 @@ def n8n_workflow() -> dict:
     }
 
 
+# =====================================================================
+# Bonus: daily quote follow-up (updates existing Airtable records)
+# =====================================================================
+FOLLOWUP_PROMPT = (ROOT / "prompts" / "followup-system-prompt.md").read_text(encoding="utf-8").strip()
+FOLLOWUP_NAME = "PV Lab Germany — Daily Quote Follow-up (Airtable → Claude → Gmail → Airtable)"
+FOLLOWUP_DAYS = 7
+FOLLOWUP_MAX = 3
+# Leads whose quote has been open FOLLOWUP_DAYS+ days since the status changed (or since the last
+# follow-up), and that have had fewer than FOLLOWUP_MAX reminders.
+FOLLOWUP_FORMULA = (
+    "AND({Status} = 'Quote Sent', "
+    "DATETIME_DIFF(NOW(), IF({Last Follow-up}, {Last Follow-up}, LAST_MODIFIED_TIME({Status})), 'days') >= "
+    + str(FOLLOWUP_DAYS)
+    + ", OR({Follow-up Count} = BLANK(), {Follow-up Count} < "
+    + str(FOLLOWUP_MAX)
+    + "))"
+)
+
+
+def followup_make_blueprint() -> dict:
+    claude_body = (
+        '{"model": "' + MODEL + '", "max_tokens": 600, '
+        '"system": ' + json.dumps(FOLLOWUP_PROMPT, ensure_ascii=False) + ', '
+        '"messages": [{"role": "user", "content": {{2.json}}}]}'
+    )
+
+    def designer(x, y, name):
+        return {"designer": {"x": x, "y": y, "name": name}}
+
+    flow = [
+        {
+            "id": 1,
+            "module": "airtable:ActionSearchRecords",
+            "version": 3,
+            "parameters": {"__IMTCONN__": None},
+            "mapper": {
+                "base": AIRTABLE_BASE,
+                "table": LEADS_TABLE,
+                "formula": FOLLOWUP_FORMULA,
+                "maxRecords": "50",
+                "useColumnId": False,
+                "sort": [],
+            },
+            "metadata": designer(0, 0, "1. Airtable — find quotes open 7+ days"),
+        },
+        {
+            "id": 2,
+            "module": "json:TransformToJSON",
+            "version": 1,
+            "parameters": {"space": ""},
+            "mapper": {
+                "object": (
+                    "Company: {{1.Company}}\nContact: {{1.Contact}}\nService: {{1.Service}}\n"
+                    "Project size: {{1.MW}} MW\nEstimated value: {{1.Value}} EUR\nAI score: {{1.Score}}\n"
+                    "Protocol: {{1.Protocol}}\n"
+                    "Last follow-up: {{ifempty(formatDate(1.`Last Follow-up`; \"YYYY-MM-DD\"); \"none yet\")}}\n"
+                    "Follow-ups already sent: {{ifempty(1.`Follow-up Count`; 0)}}"
+                )
+            },
+            "metadata": designer(300, 0, "2. Lead details as text"),
+        },
+        {
+            "id": 3,
+            "module": "http:ActionSendData",
+            "version": 3,
+            "parameters": {"handleErrors": True, "useNewZLibDeCompress": True},
+            "mapper": {
+                "url": "https://api.anthropic.com/v1/messages",
+                "serializeUrl": False,
+                "method": "post",
+                "headers": [
+                    {"name": "x-api-key", "value": "YOUR_ANTHROPIC_API_KEY"},
+                    {"name": "anthropic-version", "value": "2023-06-01"},
+                    {"name": "content-type", "value": "application/json"},
+                ],
+                "qs": [],
+                "bodyType": "raw",
+                "parseResponse": True,
+                "authUser": "",
+                "authPass": "",
+                "timeout": "60",
+                "shareCookies": False,
+                "ca": "",
+                "rejectUnauthorized": True,
+                "followRedirect": True,
+                "useQuerystring": False,
+                "gzip": True,
+                "useMtls": False,
+                "contentType": "application/json",
+                "data": claude_body,
+                "followAllRedirects": False,
+            },
+            "metadata": designer(600, 0, "3. Claude — draft the follow-up"),
+        },
+        {
+            "id": 4,
+            "module": "google-email:ActionSendEmail",
+            "version": 2,
+            "parameters": {"__IMTCONN__": None},
+            "mapper": {
+                "to": [SALES_EMAIL],
+                "subject": "Follow-up due: {{1.Company}} ({{1.MW}} MW, quote open 7+ days)",
+                "bodyType": "rawHtml",
+                "content": "<pre style=\"font-family:inherit;white-space:pre-wrap\">{{3.data.content[1].text}}</pre>",
+                "attachments": [],
+                "cc": [],
+                "bcc": [],
+            },
+            "metadata": designer(900, 0, "4. Gmail — send reminder to sales"),
+        },
+        {
+            "id": 5,
+            "module": "airtable:ActionUpdateRecords",
+            "version": 3,
+            "parameters": {"__IMTCONN__": None},
+            "mapper": {
+                "base": AIRTABLE_BASE,
+                "table": LEADS_TABLE,
+                "id": "{{1.id}}",
+                "typecast": True,
+                "useColumnId": False,
+                "record": {
+                    "Last Follow-up": "{{formatDate(now; \"YYYY-MM-DD\")}}",
+                    "Follow-up Count": "{{ifempty(1.`Follow-up Count`; 0) + 1}}",
+                },
+            },
+            "metadata": designer(1200, 0, "5. Airtable — update the lead"),
+        },
+    ]
+    return {
+        "name": FOLLOWUP_NAME,
+        "flow": flow,
+        "metadata": {
+            "instant": False,
+            "version": 1,
+            "scenario": {
+                "roundtrips": 1,
+                "maxErrors": 3,
+                "autoCommit": True,
+                "autoCommitTriggerLast": True,
+                "sequential": True,
+                "confidential": False,
+                "dataloss": False,
+                "dlq": False,
+                "freshVariables": False,
+            },
+            "designer": {"orphans": []},
+            "zone": "eu1.make.com",
+        },
+    }
+
+
+FOLLOWUP_PREPARE_JS = """// Normalise the Airtable record and decide the next follow-up number
+const f = $json.fields || $json;
+const count = Number(f['Follow-up Count']) || 0;
+const since = f['Last Follow-up'] || 'none yet';
+const text = [
+  'Company: ' + (f.Company || ''),
+  'Contact: ' + (f.Contact || ''),
+  'Service: ' + (f.Service || ''),
+  'Project size: ' + (Number(f.MW) || 0) + ' MW',
+  'Estimated value: ' + (Number(f.Value) || 0) + ' EUR',
+  'AI score: ' + (Number(f.Score) || 0),
+  'Protocol: ' + (f.Protocol || ''),
+  'Last follow-up: ' + since,
+  'Follow-ups already sent: ' + count
+].join('\\n');
+return {
+  json: {
+    recordId: $json.id,
+    company: f.Company || '',
+    mw: Number(f.MW) || 0,
+    nextCount: count + 1,
+    today: new Date().toISOString().slice(0, 10),
+    text
+  }
+};"""
+
+
+def followup_n8n_workflow() -> dict:
+    json_body = (
+        "={{ JSON.stringify({ model: '" + MODEL + "', max_tokens: 600, system: "
+        + json.dumps(FOLLOWUP_PROMPT, ensure_ascii=False)
+        + ", messages: [{ role: 'user', content: $json.text }] }) }}"
+    )
+
+    def rl(value, mode):
+        return {"__rl": True, "value": value, "mode": mode}
+
+    prep = "$('Prepare Lead').item.json"
+    nodes = [
+        {
+            "parameters": {"rule": {"interval": [{"field": "cronExpression", "expression": "0 8 * * 1-5"}]}},
+            "id": uid("fu-schedule"),
+            "name": "Every weekday 08:00",
+            "type": "n8n-nodes-base.scheduleTrigger",
+            "typeVersion": 1.2,
+            "position": [0, 300],
+        },
+        {
+            "parameters": {
+                "operation": "search",
+                "base": rl(AIRTABLE_BASE, "id"),
+                "table": rl(LEADS_TABLE, "name"),
+                "filterByFormula": FOLLOWUP_FORMULA,
+                "returnAll": False,
+                "limit": 50,
+                "options": {},
+            },
+            "id": uid("fu-search"),
+            "name": "Airtable — Find Open Quotes",
+            "type": "n8n-nodes-base.airtable",
+            "typeVersion": 2.1,
+            "position": [220, 300],
+            "credentials": {"airtableTokenApi": {"id": "", "name": "Airtable PAT"}},
+            "alwaysOutputData": False,
+        },
+        {
+            "parameters": {"mode": "runOnceForEachItem", "jsCode": FOLLOWUP_PREPARE_JS},
+            "id": uid("fu-prepare"),
+            "name": "Prepare Lead",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [440, 300],
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "https://api.anthropic.com/v1/messages",
+                "authentication": "genericCredentialType",
+                "genericAuthType": "httpHeaderAuth",
+                "sendHeaders": True,
+                "headerParameters": {"parameters": [{"name": "anthropic-version", "value": "2023-06-01"}]},
+                "sendBody": True,
+                "specifyBody": "json",
+                "jsonBody": json_body,
+                "options": {"timeout": 60000},
+            },
+            "id": uid("fu-claude"),
+            "name": "Claude — Draft Follow-up",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [660, 300],
+            "credentials": {"httpHeaderAuth": {"id": "", "name": "Anthropic API key (x-api-key)"}},
+        },
+        {
+            "parameters": {
+                "sendTo": SALES_EMAIL,
+                "subject": "=Follow-up due: {{ " + prep + ".company }} ({{ " + prep + ".mw }} MW, quote open 7+ days)",
+                "emailType": "text",
+                "message": "={{ $json.content[0].text }}",
+                "options": {},
+            },
+            "id": uid("fu-gmail"),
+            "name": "Gmail — Remind Sales",
+            "type": "n8n-nodes-base.gmail",
+            "typeVersion": 2.1,
+            "position": [880, 300],
+            "credentials": {"gmailOAuth2": {"id": "", "name": "Gmail account"}},
+        },
+        {
+            "parameters": {
+                "operation": "update",
+                "base": rl(AIRTABLE_BASE, "id"),
+                "table": rl(LEADS_TABLE, "name"),
+                "columns": {
+                    "mappingMode": "defineBelow",
+                    "value": {
+                        "id": "={{ " + prep + ".recordId }}",
+                        "Last Follow-up": "={{ " + prep + ".today }}",
+                        "Follow-up Count": "={{ " + prep + ".nextCount }}",
+                    },
+                    "matchingColumns": ["id"],
+                    "schema": [],
+                },
+                "options": {"typecast": True},
+            },
+            "id": uid("fu-update"),
+            "name": "Airtable — Update Lead",
+            "type": "n8n-nodes-base.airtable",
+            "typeVersion": 2.1,
+            "position": [1100, 300],
+            "credentials": {"airtableTokenApi": {"id": "", "name": "Airtable PAT"}},
+        },
+    ]
+
+    def to(name):
+        return {"main": [[{"node": name, "type": "main", "index": 0}]]}
+
+    connections = {
+        "Every weekday 08:00": to("Airtable — Find Open Quotes"),
+        "Airtable — Find Open Quotes": to("Prepare Lead"),
+        "Prepare Lead": to("Claude — Draft Follow-up"),
+        "Claude — Draft Follow-up": to("Gmail — Remind Sales"),
+        "Gmail — Remind Sales": to("Airtable — Update Lead"),
+    }
+    return {
+        "name": FOLLOWUP_NAME,
+        "nodes": nodes,
+        "connections": connections,
+        "active": False,
+        "settings": {"executionOrder": "v1"},
+        "pinData": {},
+        "meta": {"templateCredsSetupCompleted": False},
+        "tags": [],
+    }
+
+
 def write(path: pathlib.Path, data: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print("wrote", path.relative_to(ROOT))
@@ -480,3 +788,5 @@ def write(path: pathlib.Path, data: dict) -> None:
 if __name__ == "__main__":
     write(ROOT / "blueprints" / "make" / "pvlab-gmail-lead-intake.make-blueprint.json", make_blueprint())
     write(ROOT / "blueprints" / "n8n" / "pvlab-gmail-lead-intake.n8n-workflow.json", n8n_workflow())
+    write(ROOT / "blueprints" / "make" / "pvlab-quote-followup.make-blueprint.json", followup_make_blueprint())
+    write(ROOT / "blueprints" / "n8n" / "pvlab-quote-followup.n8n-workflow.json", followup_n8n_workflow())

@@ -1,0 +1,168 @@
+{
+  "name": "PV Lab Germany — Daily Quote Follow-up (Airtable → Claude → Gmail → Airtable)",
+  "flow": [
+    {
+      "id": 1,
+      "module": "airtable:ActionSearchRecords",
+      "version": 3,
+      "parameters": {
+        "__IMTCONN__": null
+      },
+      "mapper": {
+        "base": "appXXXXXXXXXXXXXX",
+        "table": "Leads",
+        "formula": "AND({Status} = 'Quote Sent', DATETIME_DIFF(NOW(), IF({Last Follow-up}, {Last Follow-up}, LAST_MODIFIED_TIME({Status})), 'days') >= 7, OR({Follow-up Count} = BLANK(), {Follow-up Count} < 3))",
+        "maxRecords": "50",
+        "useColumnId": false,
+        "sort": []
+      },
+      "metadata": {
+        "designer": {
+          "x": 0,
+          "y": 0,
+          "name": "1. Airtable — find quotes open 7+ days"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "module": "json:TransformToJSON",
+      "version": 1,
+      "parameters": {
+        "space": ""
+      },
+      "mapper": {
+        "object": "Company: {{1.Company}}\nContact: {{1.Contact}}\nService: {{1.Service}}\nProject size: {{1.MW}} MW\nEstimated value: {{1.Value}} EUR\nAI score: {{1.Score}}\nProtocol: {{1.Protocol}}\nLast follow-up: {{ifempty(formatDate(1.`Last Follow-up`; \"YYYY-MM-DD\"); \"none yet\")}}\nFollow-ups already sent: {{ifempty(1.`Follow-up Count`; 0)}}"
+      },
+      "metadata": {
+        "designer": {
+          "x": 300,
+          "y": 0,
+          "name": "2. Lead details as text"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "module": "http:ActionSendData",
+      "version": 3,
+      "parameters": {
+        "handleErrors": true,
+        "useNewZLibDeCompress": true
+      },
+      "mapper": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "serializeUrl": false,
+        "method": "post",
+        "headers": [
+          {
+            "name": "x-api-key",
+            "value": "YOUR_ANTHROPIC_API_KEY"
+          },
+          {
+            "name": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "name": "content-type",
+            "value": "application/json"
+          }
+        ],
+        "qs": [],
+        "bodyType": "raw",
+        "parseResponse": true,
+        "authUser": "",
+        "authPass": "",
+        "timeout": "60",
+        "shareCookies": false,
+        "ca": "",
+        "rejectUnauthorized": true,
+        "followRedirect": true,
+        "useQuerystring": false,
+        "gzip": true,
+        "useMtls": false,
+        "contentType": "application/json",
+        "data": "{\"model\": \"claude-haiku-5-5\", \"max_tokens\": 600, \"system\": \"You are the sales assistant of PV Lab Germany GmbH (Potsdam, Germany), an ISO/IEC 17025 accredited laboratory for testing solar (PV) modules and power plants.\\n\\nYou receive one lead from the sales pipeline. A quote was sent to this client and there has been no progress for at least 7 days. Write a reminder for the PV Lab sales team that they can act on in one minute.\\n\\nReply in plain text (no markdown, no code fences) in exactly this structure:\\n\\nSTATUS: one sentence on who the client is, what they asked for and how long the quote has been open.\\n\\nSUGGESTED FOLLOW-UP EMAIL\\nTo: the client's email address taken from the Contact field (write \\\"unknown\\\" if there is none)\\nSubject: a short subject line\\nBody: a polite follow-up email of at most 120 words, signed \\\"PV Lab Germany Sales Team\\\". Refer to the service, the project size in MW and the testing protocol. Offer a short call to answer open questions.\\n\\nRules:\\n- Write the email in English unless the contact's email domain ends in .de, .at or .ch; then write it in German.\\n- Never invent prices, discounts, dates, deadlines or test results. Use only the data you were given.\\n- If this is the second or third follow-up, keep it shorter and offer to close the request if the project is on hold.\", \"messages\": [{\"role\": \"user\", \"content\": {{2.json}}}]}",
+        "followAllRedirects": false
+      },
+      "metadata": {
+        "designer": {
+          "x": 600,
+          "y": 0,
+          "name": "3. Claude — draft the follow-up"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "module": "google-email:ActionSendEmail",
+      "version": 2,
+      "parameters": {
+        "__IMTCONN__": null
+      },
+      "mapper": {
+        "to": [
+          "sales@your-domain.example"
+        ],
+        "subject": "Follow-up due: {{1.Company}} ({{1.MW}} MW, quote open 7+ days)",
+        "bodyType": "rawHtml",
+        "content": "<pre style=\"font-family:inherit;white-space:pre-wrap\">{{3.data.content[1].text}}</pre>",
+        "attachments": [],
+        "cc": [],
+        "bcc": []
+      },
+      "metadata": {
+        "designer": {
+          "x": 900,
+          "y": 0,
+          "name": "4. Gmail — send reminder to sales"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "module": "airtable:ActionUpdateRecords",
+      "version": 3,
+      "parameters": {
+        "__IMTCONN__": null
+      },
+      "mapper": {
+        "base": "appXXXXXXXXXXXXXX",
+        "table": "Leads",
+        "id": "{{1.id}}",
+        "typecast": true,
+        "useColumnId": false,
+        "record": {
+          "Last Follow-up": "{{formatDate(now; \"YYYY-MM-DD\")}}",
+          "Follow-up Count": "{{ifempty(1.`Follow-up Count`; 0) + 1}}"
+        }
+      },
+      "metadata": {
+        "designer": {
+          "x": 1200,
+          "y": 0,
+          "name": "5. Airtable — update the lead"
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "instant": false,
+    "version": 1,
+    "scenario": {
+      "roundtrips": 1,
+      "maxErrors": 3,
+      "autoCommit": true,
+      "autoCommitTriggerLast": true,
+      "sequential": true,
+      "confidential": false,
+      "dataloss": false,
+      "dlq": false,
+      "freshVariables": false
+    },
+    "designer": {
+      "orphans": []
+    },
+    "zone": "eu1.make.com"
+  }
+}
